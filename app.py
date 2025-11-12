@@ -206,7 +206,7 @@ with tabs[2]:
 # Tab – Reels Impact Insights
 # -------------------------------------------------------
 # -------------------------------------------------------
-# Tab 7 – Reels Impact Insights
+# Tab 3 – Reels Impact Insights
 # -------------------------------------------------------
 import statsmodels.api as sm
 import plotly.io as pio
@@ -222,7 +222,59 @@ with tabs[3]:
     df_insight["cognitive_score1"] = pd.to_numeric(df_insight["cognitive_score1"], errors="coerce")
     df_insight["reel_minutes"] = pd.to_numeric(df_insight["reel_minutes"], errors="coerce")
 
+    # -------------------------------------------------------
+    # Dose group mapping (ensure consistent label per record)
+    # -------------------------------------------------------
+    df_ref = df_insight[df_insight["redcap_event_name"].str.contains("T0|baseline", case=False, na=False)]
+    dose_map = (
+        df_ref[["record_id", "dose_group"]]
+        .drop_duplicates(subset=["record_id"])
+        .set_index("record_id")["dose_group"]
+    )
+
+    df_insight["dose_group"] = df_insight.apply(
+        lambda r: dose_map.get(r["record_id"], r["dose_group"]), axis=1
+    )
+
+    # Normalize dose labels
+    df_insight["dose_group"] = (
+        df_insight["dose_group"]
+        .astype(str)
+        .str.strip()
+        .replace({
+            "0": "0 min/day",
+            "0min/day": "0 min/day",
+            "60": "60 min/day",
+            "60min/day": "60 min/day",
+            "180": "180 min/day",
+            "180min/day": "180 min/day",
+            ">180": ">180 min/day",
+            ">180min/day": ">180 min/day",
+            "nan": "Not completed",
+            "None": "Not completed",
+            "": "Not completed",
+            "-": "Not completed"
+        })
+    )
+
+    # Ensure consistent dose order
+    dose_order = ["0 min/day", "60 min/day", "180 min/day", ">180 min/day"]
+    df_insight["dose_group"] = pd.Categorical(df_insight["dose_group"], categories=dose_order, ordered=True)
+
+    # -------------------------------------------------------
+    # Subsets
+    # -------------------------------------------------------
     df_t1 = df_insight[df_insight["redcap_event_name"].str.contains("T1", case=False, na=False)]
+    # --- Ensure all four dose groups exist even if empty ---
+    dose_order = ["0 min/day", "60 min/day", "180 min/day", ">180 min/day"]
+    df_t1["dose_group"] = pd.Categorical(df_t1["dose_group"], categories=dose_order, ordered=True)
+
+    # Create empty rows for missing dose groups
+    missing_groups = [g for g in dose_order if g not in df_t1["dose_group"].unique()]
+    if missing_groups:
+        df_missing = pd.DataFrame({"dose_group": missing_groups})
+        df_t1 = pd.concat([df_t1, df_missing], ignore_index=True)
+
     df_days = df_insight[df_insight["redcap_event_name"].str.contains("Day", case=False, na=False)]
 
     # --- 1. Cognitive and Mood by Dose Group ---
@@ -230,14 +282,20 @@ with tabs[3]:
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(
-            px.box(df_t1, x="dose_group", y="cognitive_score1", points="all",
-                   title="Cognitive Score by Dose Group"),
+            px.box(
+                df_t1, x="dose_group", y="cognitive_score1", points="all",
+                category_orders={"dose_group": dose_order},
+                title="Cognitive Score by Dose Group"
+            ),
             use_container_width=True
         )
     with c2:
         st.plotly_chart(
-            px.box(df_t1, x="dose_group", y="mood_level", points="all",
-                   title="Mood Level by Dose Group"),
+            px.box(
+                df_t1, x="dose_group", y="mood_level", points="all",
+                category_orders={"dose_group": dose_order},
+                title="Mood Level by Dose Group"
+            ),
             use_container_width=True
         )
 
@@ -251,8 +309,11 @@ with tabs[3]:
         intercept = model.params.get("const", 0)
         df_model["predicted"] = intercept + slope * df_model["reel_minutes"]
 
-        fig = px.scatter(df_model, x="reel_minutes", y="cognitive_score1", color="dose_group",
-                         title="Reel Minutes vs Cognitive Score (OLS Fit)")
+        fig = px.scatter(
+            df_model, x="reel_minutes", y="cognitive_score1", color="dose_group",
+            category_orders={"dose_group": dose_order},
+            title="Reel Minutes vs Cognitive Score (OLS Fit)"
+        )
         fig.add_traces(px.line(df_model, x="reel_minutes", y="predicted").data)
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"OLS: score = {intercept:.2f} + {slope:.3f} × reels (p = {model.pvalues.get('reel_minutes', float('nan')):.3f})")
@@ -263,8 +324,11 @@ with tabs[3]:
     st.subheader("Sleep Duration vs Fatigue (Days 1–7)")
     if not df_days.empty:
         st.plotly_chart(
-            px.scatter(df_days, x="sleep_min", y="fatigue_today", color="dose_group",
-                       trendline="ols", title="Sleep vs Fatigue by Dose Group"),
+            px.scatter(
+                df_days, x="sleep_min", y="fatigue_today", color="dose_group",
+                trendline="ols", category_orders={"dose_group": dose_order},
+                title="Sleep vs Fatigue by Dose Group"
+            ),
             use_container_width=True
         )
     else:
@@ -281,24 +345,65 @@ with tabs[3]:
 
 
 
+
+
 # -------------------------------------------------------
 # Tab 5 – Progress Matrix
 # -------------------------------------------------------
 with tabs[4]:
     st.subheader("Form Completion Overview (REDCap Style)")
-    if not df.empty:
-        form_status = df.groupby("record_id")[FORMS].apply(lambda s: (s == 2).sum())
-        progress = (form_status.mean(axis=1) / 2 * 100).reset_index()
-        progress.columns = ["record_id", "Progress %"]
 
-        fig = px.bar(progress, x="record_id", y="Progress %", text="Progress %",
-                     title="Completion per Participant", color="Progress %",
-                     color_continuous_scale="Greens")
-        fig.update_traces(texttemplate='%{text:.0f}%', textposition='outside')
-        fig.update_layout(yaxis_range=[0, 100])
-        st.plotly_chart(fig, use_container_width=True)
+    if not df.empty:
+        # Alle Events definieren, die theoretisch existieren
+        expected_events = [
+            "T0 Baseline (Pre)",
+            "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7",
+            "T1 Post"
+        ]
+        n_expected = len(expected_events)
+
+        # Sicherstellen, dass Spalte existiert
+        if "redcap_event_name" not in df.columns:
+            st.error("Missing column 'redcap_event_name'.")
+        else:
+            # Berechne pro record_id, wie viele Events existieren
+            event_counts = (
+                df.groupby("record_id")["redcap_event_name"]
+                .nunique()
+                .reset_index(name="Completed Events")
+            )
+
+            # Fortschritt in %
+            event_counts["Progress %"] = (event_counts["Completed Events"] / n_expected * 100).round(1)
+
+            # Plot
+            fig = px.bar(
+                event_counts,
+                x="record_id",
+                y="Progress %",
+                text="Progress %",
+                color="Progress %",
+                color_continuous_scale="Greens",
+                title="Completion per Participant"
+            )
+            fig.update_traces(texttemplate="%{text:.0f}%", textposition="outside")
+            fig.update_layout(
+                yaxis_range=[0, 100],
+                xaxis_title="Participant ID",
+                yaxis_title="Progress %",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Durchschnittsfortschritt anzeigen
+            mean_progress = event_counts["Progress %"].mean()
+            st.metric("Average completion", f"{mean_progress:.1f}%")
+
+            # Optional: Tabelle anzeigen
+            st.dataframe(event_counts)
     else:
         st.info("No progress data available.")
+
+
 
 # -------------------------------------------------------
 # Tab 6 – Aggregated Metrics
