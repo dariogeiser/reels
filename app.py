@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 from redcap import Project
 
 # -------------------------------------------------------
@@ -24,80 +25,79 @@ FORMS = [
 ]
 
 FIELDS = [
-    "record_id",
+    "record_id", "redcap_event_name",
     "gender", "age_calc", "dose_group", "reel_baseline_duration",
     "reel_minutes", "sleep_min", "fatigue_today",
     "mood_level", "cognitive_score1"
 ] + FORMS
 
-
 # -------------------------------------------------------
-# REDCap Fetch
+# Fetch Data
 # -------------------------------------------------------
 @st.cache_data(ttl=600)
-def get_data(api_url, api_token, fields):
+def fetch_data(url, token, fields):
     try:
-        proj = Project(api_url, api_token)
+        proj = Project(url, token)
         data = proj.export_records(
-            fields=fields,
-            events=None,  # include all events
+            fields=[f for f in fields if f != "redcap_event_name"],
             raw_or_label="label",
             export_data_access_groups=True,
             format_type="json",
         )
-        return pd.DataFrame(data)
+
+        df = pd.DataFrame(data)
+
+        # Ensure _complete fields exist even if REDCap doesn't return them automatically
+        for f in FORMS:
+            if f not in df.columns:
+                df[f] = None
+
+        return df
     except Exception as e:
-        st.error(f"API error: {e}")
+        st.error(f"REDCap API error: {e}")
         return pd.DataFrame()
 
+
 # -------------------------------------------------------
-# Data cleaning helpers
+# Clean + Enrich Data
 # -------------------------------------------------------
-def clean_reels_data(df):
-    df = df.copy()
+def clean_data(df):
+    if df.empty:
+        return df
     df.columns = df.columns.str.lower().str.strip()
 
-    # Normalize dose group (text or numeric)
+    # Gender normalization
+    df["gender"] = (
+        df["gender"].astype(str).str.strip().replace(
+            {"-": "prefer not to say", "": "prefer not to say",
+             "nan": "prefer not to say", "None": "prefer not to say"}
+        )
+    )
+
+    # Convert numeric fields
+    num_cols = ["age_calc", "sleep_min", "fatigue_today", "mood_level",
+                "cognitive_score1", "reel_minutes"]
+    for c in num_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Dose group normalization
     df["dose_group"] = (
-        df["dose_group"].astype(str).str.strip()
-        .replace({
+        df["dose_group"].astype(str).str.strip().replace({
             "0": "0 min/day",
             "60": "60 min/day",
             "180": "180 min/day",
             ">180": ">180 min/day",
-            "nan": None,
-        })
-    )
-    # Ensure only the 4 correct labels remain
-    df.loc[
-        ~df["dose_group"].isin(["0 min/day", "60 min/day", "180 min/day", ">180 min/day"]),
-        "dose_group",
-    ] = None
-
-    print(df["dose_group"] )
-
-    df["gender"] = (
-        df["gender"]
-        .astype(str)
-        .str.strip()
-        .replace({
-            "-": "prefer not to say",
-            "": "prefer not to say",
-            "nan": "prefer not to say",
-            "None": "prefer not to say"
+            "nan": "Not completed", "": "Not completed", "-": "Not completed"
         })
     )
 
-    # Convert numeric columns safely
-    for c in ["age_calc", "sleep_min", "fatigue_today", "mood_level", "cognitive_score1", "reel_minutes"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Compute progress
+    # Progress calculation
     for f in FORMS:
-        df[f] = pd.to_numeric(df[f].replace("-", None), errors="coerce")
+        df[f] = pd.to_numeric(df[f], errors="coerce").fillna(0)
+
     df["forms_total"] = len(FORMS)
     df["forms_done"] = df[FORMS].apply(lambda s: (s == 2).sum(), axis=1)
-    df["progress_pct"] = (100 * df["forms_done"] / df["forms_total"]).round(0)
+    df["progress_pct"] = (100 * df["forms_done"] / df["forms_total"]).round(1)
 
     return df
 
@@ -108,27 +108,19 @@ with st.sidebar:
     st.header("Settings")
     api_url = st.text_input("REDCap API URL", API_URL)
     api_token = st.text_input("API Token", API_TOKEN, type="password")
-    min_progress = st.slider("Minimum Progress (%)", 0, 100, 0)
     refresh = st.button("Reload Data")
 
 # -------------------------------------------------------
-# Load
+# Load Data
 # -------------------------------------------------------
-df = get_data(api_url, api_token, FIELDS)
+df = fetch_data(api_url, api_token, FIELDS)
 if df.empty:
     st.stop()
 
-df = clean_reels_data(df)
-df = df[df["progress_pct"] >= min_progress]
-if df.empty:
-    st.warning("No records match current filters.")
-    st.stop()
+df = clean_data(df)
 
-# -------------------------------------------------------
-# Separate events
-# -------------------------------------------------------
+# Event subsets
 df_t0 = df[df["redcap_event_name"].str.contains("T0", case=False, na=False)]
-
 df_t1 = df[df["redcap_event_name"].str.contains("T1", case=False, na=False)]
 df_days = df[df["redcap_event_name"].str.contains("Day", case=False, na=False)]
 
@@ -136,113 +128,192 @@ df_days = df[df["redcap_event_name"].str.contains("Day", case=False, na=False)]
 # Tabs
 # -------------------------------------------------------
 tabs = st.tabs([
-    "Enrollment",
-    "Demographics (T0)",
-    "Daily Diary (Days 1–7)",
-    "Cognition & Mood (T0 vs T1)",
-    "Progress",
+    "Enrollment & Groups",
+    "Demographics",
+    "Daily Diary",
+    "Cognition & Mood",
+    "Progress Matrix",
     "Aggregated Metrics",
-    "Participants",
 ])
 
 # -------------------------------------------------------
-# Enrollment
+# Tab 1 – Enrollment
 # -------------------------------------------------------
 with tabs[0]:
-    st.subheader("Participant Enrollment and Group Assignment")
+    st.subheader("Enrollment & Dose Group Overview")
+
     total = df["record_id"].nunique()
     c1, c2 = st.columns(2)
     c1.metric("Total Participants", total)
-    c2.metric("Groups Represented", df["dose_group"].nunique())
+    c2.metric("Dose Groups", df_t0["dose_group"].nunique())
 
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(px.pie(df_t0, names="dose_group", title="Dose Group Distribution"), use_container_width=True)
+        st.plotly_chart(
+            px.pie(df_t0, names="dose_group", title="Dose Group Distribution"),
+            use_container_width=True
+        )
     with c2:
-        st.plotly_chart(px.histogram(df_t0, x="gender", color="dose_group", barmode="group",
-                                     title="Gender by Dose Group"), use_container_width=True)
+        st.plotly_chart(
+            px.histogram(df_t0, x="gender", color="dose_group", barmode="group",
+                         title="Gender by Dose Group"),
+            use_container_width=True
+        )
 
 # -------------------------------------------------------
-# Demographics
+# Tab 2 – Demographics
 # -------------------------------------------------------
 with tabs[1]:
-    st.subheader("Demographics Overview (Baseline T0)")
+    st.subheader("Demographics Overview (T0)")
     if not df_t0.empty:
-        avg_age = df_t0["age_calc"].mean()
+        avg_age = df_t0["age_calc"].mean(skipna=True)
         c1, c2 = st.columns(2)
-        c1.metric("Average Age", f"{avg_age:.1f}")
+        c1.metric("Average Age", f"{avg_age:.1f}" if pd.notna(avg_age) else "N/A")
         c2.metric("Gender Categories", f"{df_t0['gender'].nunique()}")
 
-        st.plotly_chart(px.histogram(df_t0, x="age_calc", nbins=10, title="Age Distribution"), use_container_width=True)
-        st.plotly_chart(px.pie(df_t0, names="gender", title="Gender Composition"), use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(px.histogram(df_t0, x="age_calc", nbins=10,
+                                         title="Age Distribution"), use_container_width=True)
+        with col2:
+            st.plotly_chart(px.pie(df_t0, names="gender",
+                                   title="Gender Composition"), use_container_width=True)
     else:
-        st.info("No baseline (T0) data found.")
+        st.info("No baseline data available.")
 
 # -------------------------------------------------------
-# Daily Diary
+# Tab 3 – Daily Diary
 # -------------------------------------------------------
 with tabs[2]:
     st.subheader("Daily Diary Metrics (Days 1–7)")
     if not df_days.empty:
+        df_days[["sleep_min", "fatigue_today"]] = df_days[["sleep_min", "fatigue_today"]].apply(pd.to_numeric, errors="coerce")
         c1, c2 = st.columns(2)
-        c1.metric("Avg Sleep (min)", f"{df_days['sleep_min'].mean():.1f}")
-        c2.metric("Avg Fatigue", f"{df_days['fatigue_today'].mean():.1f}")
+        c1.metric("Avg Sleep (min)", f"{df_days['sleep_min'].mean(skipna=True):.1f}")
+        c2.metric("Avg Fatigue", f"{df_days['fatigue_today'].mean(skipna=True):.1f}")
 
-        st.plotly_chart(px.box(df_days, x="dose_group", y="sleep_min", points="all",
-                               title="Sleep Duration by Group"), use_container_width=True)
-        st.plotly_chart(px.box(df_days, x="dose_group", y="fatigue_today", points="all",
-                               title="Fatigue by Group"), use_container_width=True)
+        st.plotly_chart(px.box(df_days, x="dose_group", y="sleep_min",
+                               points="all", title="Sleep Duration by Group"), use_container_width=True)
+        st.plotly_chart(px.box(df_days, x="dose_group", y="fatigue_today",
+                               points="all", title="Fatigue by Group"), use_container_width=True)
     else:
         st.info("No daily diary data available.")
 
 # -------------------------------------------------------
-# Cognition & Mood
+# Tab 4 – Cognition & Mood
 # -------------------------------------------------------
+# -------------------------------------------------------
+# Tab – Reels Impact Insights
+# -------------------------------------------------------
+# -------------------------------------------------------
+# Tab 7 – Reels Impact Insights
+# -------------------------------------------------------
+import statsmodels.api as sm
+import plotly.io as pio
+pio.templates.default = "plotly_white"
+
 with tabs[3]:
-    st.subheader("Cognition & Mood Comparison (T0 vs T1)")
-    merged = pd.merge(
-        df_t0[["record_id", "dose_group", "cognitive_score1", "mood_level"]],
-        df_t1[["record_id", "cognitive_score1", "mood_level"]],
-        on="record_id",
-        suffixes=("_t0", "_t1")
-    )
-    if not merged.empty:
-        merged["Δ Cognitive"] = merged["cognitive_score1_t1"] - merged["cognitive_score1_t0"]
-        merged["Δ Mood"] = merged["mood_level_t1"] - merged["mood_level_t0"]
+    st.subheader("Reels Impact Insights")
 
-        st.plotly_chart(px.box(merged, x="dose_group", y="Δ Cognitive", points="all",
-                               title="Change in Cognitive Score (T1 − T0)"), use_container_width=True)
-        st.plotly_chart(px.box(merged, x="dose_group", y="Δ Mood", points="all",
-                               title="Change in Mood (T1 − T0)"), use_container_width=True)
+    df_insight = df.copy()
+    df_insight["sleep_min"] = pd.to_numeric(df_insight["sleep_min"], errors="coerce")
+    df_insight["fatigue_today"] = pd.to_numeric(df_insight["fatigue_today"], errors="coerce")
+    df_insight["mood_level"] = pd.to_numeric(df_insight["mood_level"], errors="coerce")
+    df_insight["cognitive_score1"] = pd.to_numeric(df_insight["cognitive_score1"], errors="coerce")
+    df_insight["reel_minutes"] = pd.to_numeric(df_insight["reel_minutes"], errors="coerce")
+
+    df_t1 = df_insight[df_insight["redcap_event_name"].str.contains("T1", case=False, na=False)]
+    df_days = df_insight[df_insight["redcap_event_name"].str.contains("Day", case=False, na=False)]
+
+    # --- 1. Cognitive and Mood by Dose Group ---
+    st.subheader("Cognitive and Mood by Dose Group (T1)")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(
+            px.box(df_t1, x="dose_group", y="cognitive_score1", points="all",
+                   title="Cognitive Score by Dose Group"),
+            use_container_width=True
+        )
+    with c2:
+        st.plotly_chart(
+            px.box(df_t1, x="dose_group", y="mood_level", points="all",
+                   title="Mood Level by Dose Group"),
+            use_container_width=True
+        )
+
+    # --- 2. Reels vs Cognitive Score (OLS) ---
+    st.subheader("Reel Minutes vs Cognitive Score (T1)")
+    df_model = df_t1.dropna(subset=["reel_minutes", "cognitive_score1"])
+    if not df_model.empty:
+        X = sm.add_constant(df_model["reel_minutes"])
+        model = sm.OLS(df_model["cognitive_score1"], X).fit()
+        slope = model.params.get("reel_minutes", 0)
+        intercept = model.params.get("const", 0)
+        df_model["predicted"] = intercept + slope * df_model["reel_minutes"]
+
+        fig = px.scatter(df_model, x="reel_minutes", y="cognitive_score1", color="dose_group",
+                         title="Reel Minutes vs Cognitive Score (OLS Fit)")
+        fig.add_traces(px.line(df_model, x="reel_minutes", y="predicted").data)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"OLS: score = {intercept:.2f} + {slope:.3f} × reels (p = {model.pvalues.get('reel_minutes', float('nan')):.3f})")
     else:
-        st.info("No T0/T1 comparison data available yet.")
+        st.info("No valid T1 data for regression.")
+
+    # --- 3. Sleep vs Fatigue (Days 1–7) ---
+    st.subheader("Sleep Duration vs Fatigue (Days 1–7)")
+    if not df_days.empty:
+        st.plotly_chart(
+            px.scatter(df_days, x="sleep_min", y="fatigue_today", color="dose_group",
+                       trendline="ols", title="Sleep vs Fatigue by Dose Group"),
+            use_container_width=True
+        )
+    else:
+        st.info("No daily diary data available.")
+
+    # --- 4. Correlation Matrix (T1) ---
+    st.subheader("Correlations (T1 Data)")
+    corr_cols = ["reel_minutes", "sleep_min", "fatigue_today", "mood_level", "cognitive_score1"]
+    df_corr = df_t1[corr_cols].corr().round(2)
+    try:
+        st.dataframe(df_corr.style.background_gradient(cmap="RdYlBu_r", axis=None))
+    except Exception:
+        st.dataframe(df_corr)
+
+
 
 # -------------------------------------------------------
-# Progress
+# Tab 5 – Progress Matrix
 # -------------------------------------------------------
 with tabs[4]:
-    st.subheader("Form Completion Progress (All Events)")
-    fig = px.bar(df.sort_values("progress_pct"), x="progress_pct", y="record_id",
-                 color="dose_group", orientation="h",
-                 text="progress_pct", title="Completion by Participant")
-    fig.update_layout(xaxis_title="Progress (%)", yaxis_title="Record ID")
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("Form Completion Overview (REDCap Style)")
+    if not df.empty:
+        form_status = df.groupby("record_id")[FORMS].apply(lambda s: (s == 2).sum())
+        progress = (form_status.mean(axis=1) / 2 * 100).reset_index()
+        progress.columns = ["record_id", "Progress %"]
+
+        fig = px.bar(progress, x="record_id", y="Progress %", text="Progress %",
+                     title="Completion per Participant", color="Progress %",
+                     color_continuous_scale="Greens")
+        fig.update_traces(texttemplate='%{text:.0f}%', textposition='outside')
+        fig.update_layout(yaxis_range=[0, 100])
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No progress data available.")
 
 # -------------------------------------------------------
-# Aggregated
+# Tab 6 – Aggregated Metrics
 # -------------------------------------------------------
 with tabs[5]:
     st.subheader("Aggregated Study Metrics")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Mean Cognition", f"{df['cognitive_score1'].mean():.1f}")
-    c2.metric("Mean Mood", f"{df['mood_level'].mean():.1f}")
-    c3.metric("Mean Sleep", f"{df['sleep_min'].mean():.1f}")
-    c4.metric("Mean Fatigue", f"{df['fatigue_today'].mean():.1f}")
+    for c in ["cognitive_score1", "mood_level", "sleep_min", "fatigue_today"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-# -------------------------------------------------------
-# Participants
-# -------------------------------------------------------
-with tabs[6]:
-    st.subheader("Participant Overview Table")
-    cols = ["record_id", "redcap_event_name", "dose_group", "age_calc", "progress_pct"] + FORMS
-    st.dataframe(df[cols].sort_values(["record_id", "redcap_event_name"]), use_container_width=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mean Cognitive Score", f"{df['cognitive_score1'].mean(skipna=True):.1f}")
+    c2.metric("Mean Mood", f"{df['mood_level'].mean(skipna=True):.1f}")
+    c3.metric("Mean Sleep (min)", f"{df['sleep_min'].mean(skipna=True):.1f}")
+    c4.metric("Mean Fatigue", f"{df['fatigue_today'].mean(skipna=True):.1f}")
+
+    st.plotly_chart(px.scatter(df_days, x="sleep_min", y="fatigue_today",
+                               color="dose_group", title="Sleep vs Fatigue by Group"),
+                    use_container_width=True)
