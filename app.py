@@ -107,13 +107,11 @@ def clean_data(df):
 with st.sidebar:
     st.header("Settings")
     api_url = st.text_input("REDCap API URL", API_URL)
-
     refresh = st.button("Reload Data")
-
 # -------------------------------------------------------
 # Load Data
 # -------------------------------------------------------
-df = fetch_data(api_url, api_token, FIELDS)
+df = fetch_data(api_url, API_TOKEN, FIELDS)
 if df.empty:
     st.stop()
 
