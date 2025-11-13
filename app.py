@@ -107,7 +107,7 @@ def clean_data(df):
 with st.sidebar:
     st.header("Settings")
     api_url = st.text_input("REDCap API URL", API_URL)
-    api_token = st.text_input("API Token", API_TOKEN, type="password")
+
     refresh = st.button("Reload Data")
 
 # -------------------------------------------------------
@@ -212,20 +212,57 @@ import statsmodels.api as sm
 import plotly.io as pio
 pio.templates.default = "plotly_white"
 
+# -------------------------------------------------------
+# Tab 3 – Reels Impact Insights
+# -------------------------------------------------------
+import statsmodels.api as sm
+import plotly.io as pio
+pio.templates.default = "plotly_white"
+
+# -------------------------------------------------------
+# Tab 3 – Reels Impact Insights
+# -------------------------------------------------------
+import statsmodels.api as sm
+import plotly.io as pio
+pio.templates.default = "plotly_white"
+
 with tabs[3]:
     st.subheader("Reels Impact Insights")
 
+    # -------------------------------------------------------
+    # Copy DF + extract numeric values where needed
+    # -------------------------------------------------------
     df_insight = df.copy()
-    df_insight["sleep_min"] = pd.to_numeric(df_insight["sleep_min"], errors="coerce")
-    df_insight["fatigue_today"] = pd.to_numeric(df_insight["fatigue_today"], errors="coerce")
-    df_insight["mood_level"] = pd.to_numeric(df_insight["mood_level"], errors="coerce")
-    df_insight["cognitive_score1"] = pd.to_numeric(df_insight["cognitive_score1"], errors="coerce")
-    df_insight["reel_minutes"] = pd.to_numeric(df_insight["reel_minutes"], errors="coerce")
+
+    print(df_insight["cognitive_score1"].to_string())
+
+    num_cols = ["sleep_min", "fatigue_today", "mood_level",
+                "cognitive_score1", "reel_minutes"]
+
+    for col in num_cols:
+        df_insight[col] = (
+            df_insight[col]
+            .astype(str)
+            .str.extract(r"(\d+\.?\d*)")     # extracts numbers only
+            .astype(float)
+        )
 
     # -------------------------------------------------------
-    # Dose group mapping (ensure consistent label per record)
+    # Clean event names
     # -------------------------------------------------------
-    df_ref = df_insight[df_insight["redcap_event_name"].str.contains("T0|baseline", case=False, na=False)]
+    df_insight["event_clean"] = (
+        df_insight["redcap_event_name"]
+        .astype(str)
+        .str.lower()
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    # -------------------------------------------------------
+    # Dose group mapping from T0 Baseline
+    # -------------------------------------------------------
+    df_ref = df_insight[df_insight["event_clean"].str.contains("t0 baseline")]
+
     dose_map = (
         df_ref[["record_id", "dose_group"]]
         .drop_duplicates(subset=["record_id"])
@@ -233,115 +270,130 @@ with tabs[3]:
     )
 
     df_insight["dose_group"] = df_insight.apply(
-        lambda r: dose_map.get(r["record_id"], r["dose_group"]), axis=1
+        lambda r: dose_map.get(r["record_id"], r["dose_group"]),
+        axis=1
     )
 
-    # Normalize dose labels
+    # -------------------------------------------------------
+    # Normalize dose groups
+    # -------------------------------------------------------
     df_insight["dose_group"] = (
         df_insight["dose_group"]
         .astype(str)
+        .str.lower()
         .str.strip()
         .replace({
             "0": "0 min/day",
-            "0min/day": "0 min/day",
-            "60": "60 min/day",
-            "60min/day": "60 min/day",
-            "180": "180 min/day",
-            "180min/day": "180 min/day",
-            ">180": ">180 min/day",
-            ">180min/day": ">180 min/day",
-            "nan": "Not completed",
-            "None": "Not completed",
+            "1": "60 min/day",
+            "2": "180 min/day",
+            "3": ">180 min/day",
+            "0 min/day": "0 min/day",
+            "60 min/day": "60 min/day",
+            "180 min/day": "180 min/day",
+            ">180 min/day": ">180 min/day",
             "": "Not completed",
+            "nan": "Not completed",
+            "none": "Not completed",
             "-": "Not completed"
         })
     )
 
-    # Ensure consistent dose order
     dose_order = ["0 min/day", "60 min/day", "180 min/day", ">180 min/day"]
-    df_insight["dose_group"] = pd.Categorical(df_insight["dose_group"], categories=dose_order, ordered=True)
 
     # -------------------------------------------------------
-    # Subsets
+    # Build T1 subset
     # -------------------------------------------------------
-    df_t1 = df_insight[df_insight["redcap_event_name"].str.contains("T1", case=False, na=False)]
-    # --- Ensure all four dose groups exist even if empty ---
-    dose_order = ["0 min/day", "60 min/day", "180 min/day", ">180 min/day"]
-    df_t1["dose_group"] = pd.Categorical(df_t1["dose_group"], categories=dose_order, ordered=True)
+    df_t1 = df_insight[df_insight["event_clean"].str.contains("t1 post")].copy()
+    df_t1["dose_group"] = pd.Categorical(
+        df_t1["dose_group"], categories=dose_order, ordered=True
+    )
 
-    # Create empty rows for missing dose groups
-    missing_groups = [g for g in dose_order if g not in df_t1["dose_group"].unique()]
-    if missing_groups:
-        df_missing = pd.DataFrame({"dose_group": missing_groups})
-        df_t1 = pd.concat([df_t1, df_missing], ignore_index=True)
+    # -------------------------------------------------------
+    # Build Days 1–7 subset
+    # -------------------------------------------------------
+    df_days = df_insight[df_insight["event_clean"].str.contains("day")].copy()
 
-    df_days = df_insight[df_insight["redcap_event_name"].str.contains("Day", case=False, na=False)]
+    # ======================================================================
+    # 1. Mood by Dose Group (T1)  — Cognitive score removed (missing in T1)
+    # ======================================================================
+    st.subheader("Mood by Dose Group (T1)")
 
-    # --- 1. Cognitive and Mood by Dose Group ---
-    st.subheader("Cognitive and Mood by Dose Group (T1)")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(
-            px.box(
-                df_t1, x="dose_group", y="cognitive_score1", points="all",
-                category_orders={"dose_group": dose_order},
-                title="Cognitive Score by Dose Group"
-            ),
-            use_container_width=True
-        )
-    with c2:
-        st.plotly_chart(
-            px.box(
-                df_t1, x="dose_group", y="mood_level", points="all",
-                category_orders={"dose_group": dose_order},
-                title="Mood Level by Dose Group"
-            ),
-            use_container_width=True
-        )
+    fig_mood = px.box(
+        df_t1, x="dose_group", y="mood_level", points="all",
+        category_orders={"dose_group": dose_order},
+        title="Mood Level by Dose Group (T1)"
+    )
+    fig_mood.update_xaxes(categoryorder="array", categoryarray=dose_order)
+    st.plotly_chart(fig_mood, use_container_width=True)
 
-    # --- 2. Reels vs Cognitive Score (OLS) ---
-    st.subheader("Reel Minutes vs Cognitive Score (T1)")
-    df_model = df_t1.dropna(subset=["reel_minutes", "cognitive_score1"])
+    # ======================================================================
+    # 2. Regression: Reel Minutes vs Mood Level (T1)
+    # ======================================================================
+    st.subheader("Reel Minutes vs Mood Level (T1)")
+
+    df_model = df_t1.dropna(subset=["reel_minutes", "mood_level"])
+
     if not df_model.empty:
         X = sm.add_constant(df_model["reel_minutes"])
-        model = sm.OLS(df_model["cognitive_score1"], X).fit()
+        model = sm.OLS(df_model["mood_level"], X).fit()
+
         slope = model.params.get("reel_minutes", 0)
         intercept = model.params.get("const", 0)
+
         df_model["predicted"] = intercept + slope * df_model["reel_minutes"]
 
-        fig = px.scatter(
-            df_model, x="reel_minutes", y="cognitive_score1", color="dose_group",
-            category_orders={"dose_group": dose_order},
-            title="Reel Minutes vs Cognitive Score (OLS Fit)"
+        fig_reg = px.scatter(
+            df_model, x="reel_minutes", y="mood_level",
+            color="dose_group", category_orders={"dose_group": dose_order},
+            title="Reel Minutes vs Mood Level (OLS Fit)"
         )
-        fig.add_traces(px.line(df_model, x="reel_minutes", y="predicted").data)
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"OLS: score = {intercept:.2f} + {slope:.3f} × reels (p = {model.pvalues.get('reel_minutes', float('nan')):.3f})")
+
+        fig_reg.add_traces(
+            px.line(df_model, x="reel_minutes", y="predicted").data
+        )
+
+        st.plotly_chart(fig_reg, use_container_width=True)
+
+        st.caption(
+            f"OLS model: mood = {intercept:.2f} + {slope:.3f} × reels "
+            f"(p = {model.pvalues.get('reel_minutes', float('nan')):.3f})"
+        )
     else:
         st.info("No valid T1 data for regression.")
 
-    # --- 3. Sleep vs Fatigue (Days 1–7) ---
+    # ======================================================================
+    # 3. Sleep vs Fatigue (Days 1–7)
+    # ======================================================================
     st.subheader("Sleep Duration vs Fatigue (Days 1–7)")
+
     if not df_days.empty:
-        st.plotly_chart(
-            px.scatter(
-                df_days, x="sleep_min", y="fatigue_today", color="dose_group",
-                trendline="ols", category_orders={"dose_group": dose_order},
-                title="Sleep vs Fatigue by Dose Group"
-            ),
-            use_container_width=True
+        fig_sf = px.scatter(
+            df_days, x="sleep_min", y="fatigue_today",
+            color="dose_group", trendline="ols",
+            category_orders={"dose_group": dose_order},
+            title="Sleep vs Fatigue by Dose Group (Days 1–7)"
         )
+        st.plotly_chart(fig_sf, use_container_width=True)
     else:
         st.info("No daily diary data available.")
 
-    # --- 4. Correlation Matrix (T1) ---
+    # ======================================================================
+    # 4. Correlation Matrix (T1)
+    # ======================================================================
     st.subheader("Correlations (T1 Data)")
-    corr_cols = ["reel_minutes", "sleep_min", "fatigue_today", "mood_level", "cognitive_score1"]
+
+    corr_cols = ["reel_minutes", "sleep_min", "fatigue_today",
+                 "mood_level", "cognitive_score1"]
+
     df_corr = df_t1[corr_cols].corr().round(2)
-    try:
-        st.dataframe(df_corr.style.background_gradient(cmap="RdYlBu_r", axis=None))
-    except Exception:
-        st.dataframe(df_corr)
+
+    st.dataframe(
+        df_corr.style.background_gradient(cmap="RdYlBu_r", axis=None)
+    )
+
+
+
+
 
 
 
