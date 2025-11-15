@@ -182,21 +182,205 @@ with tabs[1]:
 # -------------------------------------------------------
 # Tab 3 – Daily Diary
 # -------------------------------------------------------
+
 with tabs[2]:
-    st.subheader("Daily Diary Metrics (Days 1–7)")
-    if not df_days.empty:
-        df_days[["sleep_min", "fatigue_today"]] = df_days[["sleep_min", "fatigue_today"]].apply(pd.to_numeric, errors="coerce")
-        c1, c2 = st.columns(2)
-        c1.metric("Avg Sleep (min)", f"{df_days['sleep_min'].mean(skipna=True):.1f}")
-        c2.metric("Avg Fatigue", f"{df_days['fatigue_today'].mean(skipna=True):.1f}")
+    
+    # ---------------------------
+    # Daily Diary – Individual Trajectories
 
-        st.plotly_chart(px.box(df_days, x="dose_group", y="sleep_min",
-                               points="all", title="Sleep Duration by Group"), use_container_width=True)
-        st.plotly_chart(px.box(df_days, x="dose_group", y="fatigue_today",
-                               points="all", title="Fatigue by Group"), use_container_width=True)
+    st.subheader("Daily Diary – Individual Trajectories")
+
+    # Make copy to avoid SettingWithCopyWarning
+    df_days = df_days.copy()
+
+    # ---------------------------------------
+    # Extract day index from event names
+    # Your event format: "Day 1", "Day 2", ...
+    # ---------------------------------------
+    # Add dose_group to daily diary data (comes from baseline)
+    df_baseline = df[df["redcap_event_name"] == "T0 Baseline (Pre)"][["record_id", "dose_group"]]
+
+    df_days = df_days.merge(df_baseline, on="record_id", how="left")
+    
+    df_days["day"] = df_days["redcap_event_name"].str.extract(r"[Dd]ay\s*(\d+)")
+
+    # Filter valid daily rows
+    df_days = df_days[df_days["day"].notna()].copy()
+
+    if df_days.empty:
+        st.warning("No valid daily diary entries found (Day 1–7).")
     else:
-        st.info("No daily diary data available.")
+        # Fix types
+        df_days["day"] = df_days["day"].astype(int)
 
+        # Convert to numeric if present
+        if "sleep_min" in df_days.columns:
+            df_days["sleep_min"] = pd.to_numeric(df_days["sleep_min"], errors="coerce")
+
+        if "reel_minutes" in df_days.columns:
+            df_days["reel_minutes"] = pd.to_numeric(df_days["reel_minutes"], errors="coerce")
+
+
+        # ---------------------------------------------------
+        # Spaghetti Plots kompakt nebeneinander
+        # ---------------------------------------------------
+
+        col1, col2 = st.columns(2)
+
+        # ---------------------------------------------------
+        # Sleep Plot (col1)
+        # ---------------------------------------------------
+        with col1:
+            if "sleep_min" in df_days.columns:
+                
+                fig_sleep = px.line(
+                    df_days,
+                    x="day",
+                    y="sleep_min",
+                    color="record_id",
+                    line_group="record_id",
+                    markers=True,
+                    labels={"day": "Day", "sleep_min": "Sleep (min)", "record_id": "Participant"},
+                    title="Sleep Trajectories"
+                )
+                fig_sleep.update_layout(template="simple_white")
+                st.plotly_chart(fig_sleep, use_container_width=True)
+            else:
+                st.info("Column 'sleep_min' not found in dataset.")
+
+
+        # ---------------------------------------------------
+        # Reels Plot (col2)
+        # ---------------------------------------------------
+        with col2:
+            if "reel_minutes" in df_days.columns:
+                
+                fig_reels = px.line(
+                    df_days,
+                    x="day",
+                    y="reel_minutes",
+                    color="record_id",
+                    line_group="record_id",
+                    markers=True,
+                    labels={"day": "Day", "reel_minutes": "Reels (min)", "record_id": "Participant"},
+                    title="Reels Trajectories"
+                )
+                fig_reels.update_layout(template="simple_white")
+                st.plotly_chart(fig_reels, use_container_width=True)
+            else:
+                st.info("Column 'reel_minutes' not found in dataset.")
+        # -------------------------------------------------------
+        # Confounder Scatter: Mean Sleep vs Mean Reels per Participant
+        # With Dose Group Coloring + Trendline
+        # -------------------------------------------------------
+
+        # -------------------------------------------------------
+        # Add dose_group into df_days (from baseline)
+        # -------------------------------------------------------
+        
+        # Extract baseline rows (contains dose_group)
+        df_baseline = df[df["redcap_event_name"] == "T0 Baseline (Pre)"][["record_id", "dose_group"]]
+
+        # Merge into df_days
+        df_days = df_days.merge(df_baseline, on="record_id", how="left")
+
+        col11, col22 = st.columns(2)
+
+        with col11:
+            if ("sleep_min" in df_days.columns) and ("reel_minutes" in df_days.columns):
+
+                st.subheader("📊 Mean Sleep vs Mean Reels Consumption per Participant")
+
+                # compute participant-level means
+                agg = (
+                    df_days.groupby(["record_id", "dose_group"])[["sleep_min", "reel_minutes"]]
+                    .mean()
+                    .reset_index()
+                )
+
+                fig_mean_scatter = px.scatter(
+                    agg,
+                    x="sleep_min",
+                    y="reel_minutes",
+                    color="dose_group",
+                    text="record_id",
+                    trendline="ols",
+                    labels={
+                        "sleep_min": "Mean Sleep (min)",
+                        "reel_minutes": "Mean Reels (min)",
+                        "dose_group": "Dose Group"
+                    })
+
+                # aesthetics
+                fig_mean_scatter.update_traces(textposition='top center')
+                fig_mean_scatter.update_layout(template="simple_white")
+
+                # set axis ranges for better interpretation
+                fig_mean_scatter.update_xaxes(range=[0, 300])
+                fig_mean_scatter.update_yaxes(range=[0, 300])
+
+                st.plotly_chart(fig_mean_scatter, width="stretch")
+
+            else:
+                st.info("Missing columns sleep_min or reel_minutes.")
+
+        # -------------------------------------------------------
+        # Metrics per Dose Group
+        # -------------------------------------------------------
+        with col22:
+            st.subheader("🎬 Daily Diary Metrics per Dose Group")
+
+            desired_order = ["0 min/day", "60 min/day", "180 min/day", ">180 min/day"]
+            groups = [g for g in desired_order if g in df_days["dose_group"].dropna().unique()]
+            # Dose groups present in df_days
+
+            if len(groups) == 0:
+                st.info("No dose group information available in daily diary entries.")
+            else:
+                cols = st.columns(len(groups))
+
+                for col, group in zip(cols, groups):
+                    df_g = df_days[df_days["dose_group"] == group]
+
+                    # Mean values
+                    mean_sleep = df_g["sleep_min"].mean()
+                    mean_reels = df_g["reel_minutes"].mean()
+
+                    # Completion rate
+                    n_participants = df_g["record_id"].nunique()
+                    n_days = df_g["day"].nunique()  # usually 7 days
+                    expected_entries = n_participants * n_days
+
+                    completed_entries = (
+                        df_g[["record_id", "day"]]
+                        .drop_duplicates()
+                        .shape[0]
+                    )
+
+                    completion_rate = (
+                        completed_entries / expected_entries * 100
+                        if expected_entries > 0 else 0
+                    )
+
+                                    # Output (improved card-style layout)
+                    col.markdown(
+                        f"""
+                        <div style="
+                            background-color:#F8F9FC;
+                            padding:14px;
+                            border-radius:12px;
+                            box-shadow:0 2px 8px rgba(0,0,0,0.08);
+                            border-left:6px solid #4A90E2;
+                            margin-bottom:16px;
+                        ">
+                            <h4 style="margin-top:0;">Dose Group {group}</h4>
+                            <p style="margin:4px 0;"><b>Mean Sleep:</b> {mean_sleep:.1f} min</p>
+                            <p style="margin:4px 0;"><b>Mean Reels:</b> {mean_reels:.1f} min</p>
+                            <p style="margin:4px 0;"><b>Completion Rate:</b> {completion_rate:.1f}%</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 # -------------------------------------------------------
 # Tab 4 – Cognition & Mood
 # -------------------------------------------------------
