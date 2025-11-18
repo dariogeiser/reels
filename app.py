@@ -185,46 +185,47 @@ with tabs[1]:
 
 with tabs[2]:
     
-    # ---------------------------
-    # Daily Diary – Individual Trajectories
+    st.subheader("Daily Diary")
 
-    st.subheader("Daily Diary – Individual Trajectories")
-
-    # Make copy to avoid SettingWithCopyWarning
+    # ########### COPY df_days ###########
     df_days = df_days.copy()
 
     # ---------------------------------------
-    # Extract day index from event names
-    # event format: "Day 1", "Day 2", ...
+    # Merge dose_group from baseline
     # ---------------------------------------
-    # Add dose_group to daily diary data (comes from baseline)
-    df_baseline = df[df["redcap_event_name"] == "T0 Baseline (Pre)"][["record_id", "dose_group"]]
+    df_baseline = df[df["redcap_event_name"].str.contains("T0", case=False, na=False)][
+        ["record_id", "dose_group"]
+    ]
 
     df_days = df_days.merge(df_baseline, on="record_id", how="left")
-    
+
+    # Normalize to a single clean dose_group column
+    if "dose_group_x" in df_days.columns or "dose_group_y" in df_days.columns:
+        df_days["dose_group"] = df_days.get("dose_group_y").combine_first(df_days.get("dose_group_x"))
+        df_days.drop(columns=[c for c in ["dose_group_x", "dose_group_y"] if c in df_days.columns], inplace=True)
+
+    # ---------------------------------------
+    # Extract Day ("Day 1", "Day 2", ...)
+    # ---------------------------------------
     df_days["day"] = df_days["redcap_event_name"].str.extract(r"[Dd]ay\s*(\d+)")
-
-    # Filter valid daily rows
     df_days = df_days[df_days["day"].notna()].copy()
+    df_days["day"] = df_days["day"].astype(int)
 
-    # --- Clean data: remove implausible values ---
+    # ---------------------------------------
+    # Clean implausible values
+    # ---------------------------------------
     df_days = df_days[
         (df_days["sleep_min"].between(0, 200)) &
         (df_days["reel_minutes"].between(0, 300))
-    ]
+    ].copy()
+
+    # Convert to numeric
+    df_days["sleep_min"] = pd.to_numeric(df_days["sleep_min"], errors="coerce")
+    df_days["reel_minutes"] = pd.to_numeric(df_days["reel_minutes"], errors="coerce")
 
     if df_days.empty:
-        st.warning("No valid daily diary entries found (Day 1–7).")
-    else:
-        # Fix types
-        df_days["day"] = df_days["day"].astype(int)
-
-        # Convert to numeric if present
-        if "sleep_min" in df_days.columns:
-            df_days["sleep_min"] = pd.to_numeric(df_days["sleep_min"], errors="coerce")
-
-        if "reel_minutes" in df_days.columns:
-            df_days["reel_minutes"] = pd.to_numeric(df_days["reel_minutes"], errors="coerce")
+        st.warning("No valid daily diary entries found.")
+        st.stop()
 
 
          # -------------------------------------------------------
@@ -245,6 +246,15 @@ with tabs[2]:
         # -------------------------------------------------------
         # Mean Sleep per Day per Dose Group
         # -------------------------------------------------------
+        df_mean = (
+            df_days.groupby(["day", "dose_group"])[["sleep_min", "reel_minutes"]]
+            .mean()
+            .reset_index()
+        )
+
+        cA, cB = st.columns(2)
+
+        # Mean Sleep plot
         with cA:
             fig_mean_sleep = px.line(
                 df_mean,
@@ -252,20 +262,13 @@ with tabs[2]:
                 y="sleep_min",
                 color="dose_group",
                 markers=True,
-                labels={
-                    "day": "Day",
-                    "sleep_min": "Mean Sleep (min)",
-                    "dose_group": "Dose Group"
-                },
                 title="Mean Sleep per Day per Dose Group",
+                labels={"sleep_min": "Mean Sleep (min)", "dose_group": "Dose Group"},
             )
             fig_mean_sleep.update_layout(template="simple_white")
             st.plotly_chart(fig_mean_sleep, use_container_width=True)
 
-
-        # -------------------------------------------------------
-        # Mean Reels per Day per Dose Group
-        # -------------------------------------------------------
+        # Mean Reels plot
         with cB:
             fig_mean_reels = px.line(
                 df_mean,
@@ -273,12 +276,8 @@ with tabs[2]:
                 y="reel_minutes",
                 color="dose_group",
                 markers=True,
-                labels={
-                    "day": "Day",
-                    "reel_minutes": "Mean Reels (min)",
-                    "dose_group": "Dose Group"
-                },
                 title="Mean Reels per Day per Dose Group",
+                labels={"reel_minutes": "Mean Reels (min)", "dose_group": "Dose Group"},
             )
             fig_mean_reels.update_layout(template="simple_white")
             st.plotly_chart(fig_mean_reels, use_container_width=True)
@@ -288,16 +287,6 @@ with tabs[2]:
         # Confounder Scatter: Mean Sleep vs Mean Reels per Participant
         # With Dose Group Coloring + Trendline
         # -------------------------------------------------------
-
-        # -------------------------------------------------------
-        # Add dose_group into df_days (from baseline)
-        # -------------------------------------------------------
-        
-        # Extract baseline rows (contains dose_group)
-        df_baseline = df[df["redcap_event_name"] == "T0 Baseline (Pre)"][["record_id", "dose_group"]]
-
-        # Merge into df_days
-        df_days = df_days.merge(df_baseline, on="record_id", how="left")
 
         col11, col22 = st.columns(2)
 
@@ -331,8 +320,8 @@ with tabs[2]:
                 fig_mean_scatter.update_layout(template="simple_white")
 
                 # set axis ranges for better interpretation
-                fig_mean_scatter.update_xaxes(range=[0, 300])
-                fig_mean_scatter.update_yaxes(range=[0, 300])
+                fig_mean_scatter.update_xaxes(range=[0, 200])
+                fig_mean_scatter.update_yaxes(range=[0, 200])
 
                 st.plotly_chart(fig_mean_scatter, width="stretch")
 
