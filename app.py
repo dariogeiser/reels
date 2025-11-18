@@ -227,54 +227,63 @@ with tabs[2]:
             df_days["reel_minutes"] = pd.to_numeric(df_days["reel_minutes"], errors="coerce")
 
 
-        # ---------------------------------------------------
-        # Spaghetti Plots kompakt nebeneinander
-        # ---------------------------------------------------
+         # -------------------------------------------------------
+        # Mean Sleep/Reels per Day & per Dose Group
+        # -------------------------------------------------------
 
-        col1, col2 = st.columns(2)
+        st.subheader("📈 Group-Level Daily Trends (Means per Day)")
 
-        # ---------------------------------------------------
-        # Sleep Plot (col1)
-        # ---------------------------------------------------
-        with col1:
-            if "sleep_min" in df_days.columns:
+        # Group by Day + Dose Group
+        df_mean = (
+            df_days.groupby(["day", "dose_group"])[["sleep_min", "reel_minutes"]]
+            .mean()
+            .reset_index()
+        )
+
+        cA, cB = st.columns(2)
+
+        # -------------------------------------------------------
+        # Mean Sleep per Day per Dose Group
+        # -------------------------------------------------------
+        with cA:
+            fig_mean_sleep = px.line(
+                df_mean,
+                x="day",
+                y="sleep_min",
+                color="dose_group",
+                markers=True,
+                labels={
+                    "day": "Day",
+                    "sleep_min": "Mean Sleep (min)",
+                    "dose_group": "Dose Group"
+                },
+                title="Mean Sleep per Day per Dose Group",
+            )
+            fig_mean_sleep.update_layout(template="simple_white")
+            st.plotly_chart(fig_mean_sleep, use_container_width=True)
+
+
+        # -------------------------------------------------------
+        # Mean Reels per Day per Dose Group
+        # -------------------------------------------------------
+        with cB:
+            fig_mean_reels = px.line(
+                df_mean,
+                x="day",
+                y="reel_minutes",
+                color="dose_group",
+                markers=True,
+                labels={
+                    "day": "Day",
+                    "reel_minutes": "Mean Reels (min)",
+                    "dose_group": "Dose Group"
+                },
+                title="Mean Reels per Day per Dose Group",
+            )
+            fig_mean_reels.update_layout(template="simple_white")
+            st.plotly_chart(fig_mean_reels, use_container_width=True)
                 
-                fig_sleep = px.line(
-                    df_days,
-                    x="day",
-                    y="sleep_min",
-                    color="record_id",
-                    line_group="record_id",
-                    markers=True,
-                    labels={"day": "Day", "sleep_min": "Sleep (min)", "record_id": "Participant"},
-                    title="Sleep Trajectories"
-                )
-                fig_sleep.update_layout(template="simple_white")
-                st.plotly_chart(fig_sleep, use_container_width=True)
-            else:
-                st.info("Column 'sleep_min' not found in dataset.")
 
-
-        # ---------------------------------------------------
-        # Reels Plot (col2)
-        # ---------------------------------------------------
-        with col2:
-            if "reel_minutes" in df_days.columns:
-                
-                fig_reels = px.line(
-                    df_days,
-                    x="day",
-                    y="reel_minutes",
-                    color="record_id",
-                    line_group="record_id",
-                    markers=True,
-                    labels={"day": "Day", "reel_minutes": "Reels (min)", "record_id": "Participant"},
-                    title="Reels Trajectories"
-                )
-                fig_reels.update_layout(template="simple_white")
-                st.plotly_chart(fig_reels, use_container_width=True)
-            else:
-                st.info("Column 'reel_minutes' not found in dataset.")
         # -------------------------------------------------------
         # Confounder Scatter: Mean Sleep vs Mean Reels per Participant
         # With Dose Group Coloring + Trendline
