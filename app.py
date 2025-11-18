@@ -195,7 +195,7 @@ with tabs[2]:
 
     # ---------------------------------------
     # Extract day index from event names
-    # Your event format: "Day 1", "Day 2", ...
+    # event format: "Day 1", "Day 2", ...
     # ---------------------------------------
     # Add dose_group to daily diary data (comes from baseline)
     df_baseline = df[df["redcap_event_name"] == "T0 Baseline (Pre)"][["record_id", "dose_group"]]
@@ -206,6 +206,12 @@ with tabs[2]:
 
     # Filter valid daily rows
     df_days = df_days[df_days["day"].notna()].copy()
+
+    # --- Clean data: remove implausible values ---
+    df_days = df_days[
+        (df_days["sleep_min"].between(0, 200)) &
+        (df_days["reel_minutes"].between(0, 300))
+    ]
 
     if df_days.empty:
         st.warning("No valid daily diary entries found (Day 1–7).")
