@@ -227,106 +227,95 @@ with tabs[2]:
         st.warning("No valid daily diary entries found.")
         st.stop()
 
+    # -------------------------------------------------------
+    # Mean Sleep/Reels per Day & per Dose Group
+    # -------------------------------------------------------
 
-         # -------------------------------------------------------
-        # Mean Sleep/Reels per Day & per Dose Group
-        # -------------------------------------------------------
+    st.subheader("📈 Group-Level Daily Trends (Means per Day)")
 
-        st.subheader("📈 Group-Level Daily Trends (Means per Day)")
+    # Group by Day + Dose Group
+    df_mean = (
+        df_days.groupby(["day", "dose_group"])[["sleep_min", "reel_minutes"]]
+        .mean()
+        .reset_index()
+    )
 
-        # Group by Day + Dose Group
-        df_mean = (
-            df_days.groupby(["day", "dose_group"])[["sleep_min", "reel_minutes"]]
-            .mean()
-            .reset_index()
+    cA, cB = st.columns(2)
+
+    # Mean Sleep plot
+    with cA:
+        fig_mean_sleep = px.line(
+            df_mean,
+            x="day",
+            y="sleep_min",
+            color="dose_group",
+            markers=True,
+            title="Mean Sleep per Day per Dose Group",
+            labels={"sleep_min": "Mean Sleep (min)", "dose_group": "Dose Group"},
         )
+        fig_mean_sleep.update_layout(template="simple_white")
+        st.plotly_chart(fig_mean_sleep, use_container_width=True)
 
-        cA, cB = st.columns(2)
-
-        # -------------------------------------------------------
-        # Mean Sleep per Day per Dose Group
-        # -------------------------------------------------------
-        df_mean = (
-            df_days.groupby(["day", "dose_group"])[["sleep_min", "reel_minutes"]]
-            .mean()
-            .reset_index()
+    # Mean Reels plot
+    with cB:
+        fig_mean_reels = px.line(
+            df_mean,
+            x="day",
+            y="reel_minutes",
+            color="dose_group",
+            markers=True,
+            title="Mean Reels per Day per Dose Group",
+            labels={"reel_minutes": "Mean Reels (min)", "dose_group": "Dose Group"},
         )
-
-        cA, cB = st.columns(2)
-
-        # Mean Sleep plot
-        with cA:
-            fig_mean_sleep = px.line(
-                df_mean,
-                x="day",
-                y="sleep_min",
-                color="dose_group",
-                markers=True,
-                title="Mean Sleep per Day per Dose Group",
-                labels={"sleep_min": "Mean Sleep (min)", "dose_group": "Dose Group"},
-            )
-            fig_mean_sleep.update_layout(template="simple_white")
-            st.plotly_chart(fig_mean_sleep, use_container_width=True)
-
-        # Mean Reels plot
-        with cB:
-            fig_mean_reels = px.line(
-                df_mean,
-                x="day",
-                y="reel_minutes",
-                color="dose_group",
-                markers=True,
-                title="Mean Reels per Day per Dose Group",
-                labels={"reel_minutes": "Mean Reels (min)", "dose_group": "Dose Group"},
-            )
-            fig_mean_reels.update_layout(template="simple_white")
-            st.plotly_chart(fig_mean_reels, use_container_width=True)
+        fig_mean_reels.update_layout(template="simple_white")
+        st.plotly_chart(fig_mean_reels, use_container_width=True)
+         
                 
 
-        # -------------------------------------------------------
-        # Confounder Scatter: Mean Sleep vs Mean Reels per Participant
-        # With Dose Group Coloring + Trendline
-        # -------------------------------------------------------
+    # -------------------------------------------------------
+    # Confounder Scatter: Mean Sleep vs Mean Reels per Participant
+    # With Dose Group Coloring + Trendline
+    # -------------------------------------------------------
 
-        col11, col22 = st.columns(2)
+    col11, col22 = st.columns(2)
 
-        with col11:
-            if ("sleep_min" in df_days.columns) and ("reel_minutes" in df_days.columns):
+    with col11:
+        if ("sleep_min" in df_days.columns) and ("reel_minutes" in df_days.columns):
 
-                st.subheader("📊 Mean Sleep vs Mean Reels Consumption per Participant")
+            st.subheader("📊 Mean Sleep vs Mean Reels Consumption per Participant")
 
-                # compute participant-level means
-                agg = (
-                    df_days.groupby(["record_id", "dose_group"])[["sleep_min", "reel_minutes"]]
-                    .mean()
-                    .reset_index()
-                )
+            # compute participant-level means
+            agg = (
+                df_days.groupby(["record_id", "dose_group"])[["sleep_min", "reel_minutes"]]
+                .mean()
+                .reset_index()
+            )
 
-                fig_mean_scatter = px.scatter(
-                    agg,
-                    x="sleep_min",
-                    y="reel_minutes",
-                    color="dose_group",
-                    text="record_id",
-                    trendline="ols",
-                    labels={
-                        "sleep_min": "Mean Sleep (min)",
-                        "reel_minutes": "Mean Reels (min)",
-                        "dose_group": "Dose Group"
-                    })
+            fig_mean_scatter = px.scatter(
+                agg,
+                x="sleep_min",
+                y="reel_minutes",
+                color="dose_group",
+                text="record_id",
+                trendline="ols",
+                labels={
+                    "sleep_min": "Mean Sleep (min)",
+                    "reel_minutes": "Mean Reels (min)",
+                     "dose_group": "Dose Group"
+                })
 
-                # aesthetics
-                fig_mean_scatter.update_traces(textposition='top center')
-                fig_mean_scatter.update_layout(template="simple_white")
+            # aesthetics
+            fig_mean_scatter.update_traces(textposition='top center')
+            fig_mean_scatter.update_layout(template="simple_white")
 
-                # set axis ranges for better interpretation
-                fig_mean_scatter.update_xaxes(range=[0, 200])
-                fig_mean_scatter.update_yaxes(range=[0, 200])
+            # set axis ranges for better interpretation
+            fig_mean_scatter.update_xaxes(range=[0, 200])
+            fig_mean_scatter.update_yaxes(range=[0, 200])
 
-                st.plotly_chart(fig_mean_scatter, width="stretch")
+            st.plotly_chart(fig_mean_scatter, width="stretch")
 
-            else:
-                st.info("Missing columns sleep_min or reel_minutes.")
+        else:
+            st.info("Missing columns sleep_min or reel_minutes.")
 
         # -------------------------------------------------------
         # Metrics per Dose Group
