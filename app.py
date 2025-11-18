@@ -231,8 +231,6 @@ with tabs[2]:
     # Mean Sleep/Reels per Day & per Dose Group
     # -------------------------------------------------------
 
-    st.subheader("📈 Group-Level Daily Trends (Means per Day)")
-
     # Group by Day + Dose Group
     df_mean = (
         df_days.groupby(["day", "dose_group"])[["sleep_min", "reel_minutes"]]
